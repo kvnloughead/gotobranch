@@ -1,0 +1,328 @@
+openapi: 3.1.0
+info:
+  title: gotobranch API
+  version: 0.1.0
+  summary: Contract for listing, filtering, and switching git branches with pagination.
+  description: |
+    This OpenAPI spec models the core business operations behind an interactive
+    CLI tool for navigating and switching git branches. It focuses on listing
+    branches with filtering and pagination, retrieving the current branch, and
+    switching to a selected branch.
+
+    Although the first implementation will be a CLI, this spec defines a clear
+    boundary for the core logic so different use cases/commands can reuse the
+    same operations.
+
+      Notes
+      - If repoPath is omitted, implementations should default to the current
+        working directory.
+      - Pattern filtering is case-insensitive by default unless otherwise noted.
+      - Pagination is cursor-free and page/pageSize based for simplicity.
+servers:
+  - url: http://localhost:9999
+    description: Placeholder dev server if an HTTP adapter is used.
+
+x-cli:
+  name: gotobranch
+  description: Interactive branch navigator.
+  usage: |
+    gotobranch [pattern]
+
+    Options:
+      --repo <path>        Path to the git repository (defaults to CWD)
+      --scope <local|remote|all>  Branch scope filter (default: local)
+      --page-size <n>      Page size for pagination (default: 50)
+  flows:
+    interactive:
+      - description: Start listing branches matching optional [pattern].
+        api: GET /branches
+      - description: User refines pattern or navigates pages; repeat listing.
+        api: GET /branches
+      - description: On selection, execute switch.
+        api: POST /checkout
+
+tags:
+  - name: Branches
+  - name: Actions
+
+paths:
+  /branches:
+    get:
+      tags: [Branches]
+      summary: List branches with optional filtering and pagination.
+      operationId: listBranches
+      parameters:
+        - in: query
+          name: repoPath
+          schema: { type: string }
+          description: Absolute path to the git repository. Defaults to CWD if omitted.
+        - in: query
+          name: pattern
+          schema: { type: string }
+          description: Case-insensitive filter applied to branch names.
+        - in: query
+          name: scope
+          schema:
+            type: string
+            enum: [local, remote, all]
+            default: local
+          description: Whether to include local, remote, or all branches.
+        - in: query
+          name: sortBy
+          schema:
+            type: string
+            enum: [name, recency]
+            default: recency
+          description: Sort by name (lexicographic) or recency (last commit time).
+        - in: query
+          name: sortDir
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: Sort direction.
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: 1-based page number.
+        - in: query
+          name: pageSize
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Items per page.
+      responses:
+        "200":
+          description: Paginated list of branches.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListBranchesResponse"
+              examples:
+                default:
+                  summary: Sample paginated branch listing
+                  value:
+                    page: 1
+                    pageSize: 5
+                    total: 23
+                    hasPrev: false
+                    hasNext: true
+                    items:
+                      - name: main
+                        fullRef: refs/heads/main
+                        isCurrent: true
+                        isRemote: false
+                        upstream: origin/main
+                        headCommitSha: 0123abcd...
+                        headCommitAt: "2025-08-18T12:34:56Z"
+                        lastCommitMessage: "Merge pull request #123 from feature/x"
+                      - name: feature/login
+                        fullRef: refs/heads/feature/login
+                        isCurrent: false
+                        isRemote: false
+                        upstream: origin/feature/login
+                        headCommitSha: 89ab45ff...
+                        headCommitAt: "2025-08-10T08:00:00Z"
+                        lastCommitMessage: "Add login form"
+
+  /current-branch:
+    get:
+      tags: [Branches]
+      summary: Get the current branch for a repository.
+      operationId: getCurrentBranch
+      parameters:
+        - in: query
+          name: repoPath
+          schema: { type: string }
+          description: Absolute path to the git repository. Defaults to CWD if omitted.
+      responses:
+        "200":
+          description: Current branch details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Branch"
+        "404":
+          description: Not on any branch (e.g., detached HEAD).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                detached:
+                  value:
+                    type: about:blank
+                    title: Detached HEAD
+                    status: 404
+                    detail: Repository is in a detached HEAD state.
+
+  /checkout:
+    post:
+      tags: [Actions]
+      summary: Switch to a branch (optionally creating/tracking if needed).
+      operationId: checkoutBranch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckoutRequest"
+            examples:
+              switch:
+                value:
+                  repoPath: /path/to/repo
+                  name: feature/login
+                  create: false
+                  trackRemote: true
+      responses:
+        "200":
+          description: Checkout/switch result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CheckoutResponse"
+        "409":
+          description: Uncommitted changes would be overwritten.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                dirty:
+                  value:
+                    type: about:blank
+                    title: Working tree has uncommitted changes
+                    status: 409
+                    detail: Stash, commit, or discard changes before switching.
+
+  /actions:
+    get:
+      tags: [Actions]
+      summary: List supported actions for a selected branch.
+      operationId: listActions
+      parameters:
+        - in: query
+          name: repoPath
+          schema: { type: string }
+          description: Absolute path to the git repository. Defaults to CWD if omitted.
+      responses:
+        "200":
+          description: List of supported actions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Action"
+              examples:
+                default:
+                  value:
+                    - id: switch
+                      label: Switch to branch
+                      description: Checkout the selected branch.
+
+components:
+  schemas:
+    Branch:
+      type: object
+      required: [name, fullRef, isCurrent, isRemote]
+      properties:
+        name:
+          type: string
+          description: Short branch name.
+        fullRef:
+          type: string
+          description: Full ref path (e.g., refs/heads/main or refs/remotes/origin/main).
+        isCurrent:
+          type: boolean
+        isRemote:
+          type: boolean
+        upstream:
+          type: string
+          nullable: true
+          description: Upstream tracking branch if present (e.g., origin/main).
+        headCommitSha:
+          type: string
+          nullable: true
+        headCommitAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastCommitMessage:
+          type: string
+          nullable: true
+    ListBranchesResponse:
+      type: object
+      required: [items, page, pageSize, total, hasPrev, hasNext]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Branch"
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+        hasPrev:
+          type: boolean
+        hasNext:
+          type: boolean
+    CheckoutRequest:
+      type: object
+      required: [name]
+      properties:
+        repoPath:
+          type: string
+          description: Absolute path to the git repository. Defaults to CWD if omitted.
+        name:
+          type: string
+          description: The branch name (short) or full ref to switch to.
+        create:
+          type: boolean
+          default: false
+          description: Create the branch if it does not exist locally.
+        trackRemote:
+          type: boolean
+          default: true
+          description: If creating from a remote, set upstream tracking.
+    CheckoutResponse:
+      type: object
+      required: [switched, currentBranch]
+      properties:
+        switched:
+          type: boolean
+        previousBranch:
+          type: string
+          nullable: true
+        currentBranch:
+          $ref: "#/components/schemas/Branch"
+    Action:
+      type: object
+      required: [id, label]
+      properties:
+        id:
+          type: string
+          enum: [switch]
+        label:
+          type: string
+        description:
+          type: string
+    Problem:
+      type: object
+      description: RFC 7807 Problem Details
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
