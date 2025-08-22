@@ -1,3 +1,7 @@
+// Package tui implements a small interactive terminal UI for browsing and
+// switching git branches. It uses the Bubble Tea framework and exposes a
+// Model type that implements the Bubble Tea Model interface. The UI
+// supports filtering, pagination, and switching branches.
 package tui
 
 import (
@@ -25,11 +29,12 @@ type Model struct {
 	cursor int // index within current page items
 }
 
+// listMsg is a message that tells the model to update the list of branches.
 type listMsg struct {
-	// listMsg is a message that tells the model to update the list of branches.
-	// Its .items field contains only the items to display on the current page.
-	// The .total field is a count of all matches.
+	// Slice of the items to display on the current page.
 	items []core.Branch
+
+	// A count of all matches, not just on the current page.
 	total int
 	err   error
 }
@@ -43,6 +48,11 @@ type Options struct {
 	Pattern  string
 }
 
+// New constructs a TUI Model configured with the provided options.
+// - RepoPath: path to the git repository (empty = CWD)
+// - Scope: which branches to include (local/remote/all)
+// - PageSize: number of items per page (defaults to 50)
+// - Pattern: initial filter string
 func New(opts Options) Model {
 	inp := textinput.New()
 	inp.Placeholder = "Filter pattern (type to filter)"
@@ -64,10 +74,15 @@ func New(opts Options) Model {
 	return m
 }
 
+// Init requests the first page of branches when the Bubble Tea
+// program starts.
 func (m Model) Init() tea.Cmd {
 	return m.refreshList()
 }
 
+// refreshList returns a command which queries core.ListBranches for
+// the current page and filter. The command posts a listMsg with the
+// page items and total count which Update will apply to the model.
 func (m Model) refreshList() tea.Cmd {
 	return func() tea.Msg {
 		resp, err := core.ListBranches(core.ListBranchesRequest{

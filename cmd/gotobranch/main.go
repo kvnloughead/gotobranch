@@ -1,3 +1,6 @@
+// Package main contains the gotobranch CLI entrypoint. It wires up
+// command-line flags, constructs the TUI model, and runs the Bubble Tea
+// program loop.
 package main
 
 import (

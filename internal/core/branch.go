@@ -1,3 +1,8 @@
+// Package core contains the business logic for querying and manipulating
+// git branches used by the gotobranch CLI and TUI. It provides small,
+// documented helpers for listing branches, discovering the current branch,
+// and switching branches. The functions are synchronous and return plain
+// Go types so callers can build UIs and tests on top of them.
 package core
 
 import (
@@ -73,7 +78,19 @@ func GetCurrentBranch(repoPath string) (*Branch, error) {
 	}, nil
 }
 
-// ListBranches lists branches with filtering and pagination.
+// ListBranches lists branches with filtering, sorting and pagination.
+//
+// It queries local and/or remote refs based on req.Scope, parses the
+// metadata returned by `git for-each-ref`, applies an optional case-
+// insensitive substring filter from req.Pattern, sorts the combined set
+// (by name or recency), and returns a single page of results in
+// ListBranchesResponse.Items. The response also contains Total which is
+// the total number of matches across all pages so callers can compute
+// pagination information.
+//
+// Notes:
+//   - Page is 1-based. If req.Page <= 0 it will be treated as 1.
+//   - PageSize defaults to 50 when not provided.
 func ListBranches(req ListBranchesRequest) (ListBranchesResponse, error) {
 	if req.Page <= 0 {
 		req.Page = 1
@@ -167,7 +184,10 @@ func ListBranches(req ListBranchesRequest) (ListBranchesResponse, error) {
 	return resp, nil
 }
 
-// Checkout switches to a branch (optionally creating/tracking).
+// Checkout switches to the named branch. If create is true the branch is
+// created with `git switch -c <name>`, otherwise it attempts to switch to
+// an existing branch. The function returns the previous branch name (if
+// available) and any error from the git command.
 func Checkout(repoPath, name string, create bool) (string, error) {
 	if strings.TrimSpace(name) == "" {
 		return "", errors.New("branch name required")
@@ -189,6 +209,10 @@ func Checkout(repoPath, name string, create bool) (string, error) {
 	return prev, nil
 }
 
+// parseForEachRef converts the output of `git for-each-ref` (with the
+// format used by ListBranches) into a slice of Branch values. The
+// expected format is lines of tab-separated fields: refname, sha,
+// committerdate (RFC3339-like), and commit subject.
 func parseForEachRef(out string, isRemote bool) []Branch {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	res := make([]Branch, 0, len(lines))
@@ -204,8 +228,8 @@ func parseForEachRef(out string, isRemote bool) []Branch {
 		sha := parts[1]
 		dateStr := parts[2]
 		msg := parts[3]
-		var tPtr *time.Time
 		// iso8601 from git is typically RFC3339 or close enough
+		var tPtr *time.Time
 		if ts, err := time.Parse(time.RFC3339, dateStr); err == nil {
 			tPtr = &ts
 		}
@@ -231,6 +255,9 @@ func parseForEachRef(out string, isRemote bool) []Branch {
 	return res
 }
 
+// git runs a git command in the given repoPath (if non-empty) and
+// returns the combined stdout/stderr as a string. On error the returned
+// error includes the command output to aid debugging.
 func git(repoPath string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	if repoPath != "" {
