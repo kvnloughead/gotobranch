@@ -25,7 +25,14 @@ type Model struct {
 	cursor int // index within current page items
 }
 
-type listMsg struct{}
+type listMsg struct {
+	// listMsg is a message that tells the model to update the list of branches.
+	// Its .items field contains only the items to display on the current page.
+	// The .total field is a count of all matches.
+	items []core.Branch
+	total int
+	err   error
+}
 
 type switchMsg struct{ err error }
 
@@ -73,13 +80,9 @@ func (m Model) refreshList() tea.Cmd {
 			PageSize: m.paginator.PerPage,
 		})
 		if err != nil {
-			m.error = err
-			return listMsg{}
+			return listMsg{err: err}
 		}
-		m.items = resp.Items
-		m.total = resp.Total
-		m.paginator.SetTotalPages((resp.Total + m.paginator.PerPage - 1) / m.paginator.PerPage)
-		return listMsg{}
+		return listMsg{items: resp.Items, total: resp.Total}
 	}
 }
 
@@ -126,7 +129,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.refreshList()
 		}
 	case listMsg:
-		// refreshed
+		// listMsg tells the model to update the list of items
+		m.error = msg.err
+		if msg.err == nil {
+			// If no error, update the model with the data from the message, setup
+			// pagination, and clamp cursor between lines 0 and len(msg.items)-1 to
+			// ensure it is always visible.
+			m.items = msg.items
+			m.total = msg.total
+			perPage := m.paginator.PerPage
+			if perPage <= 0 {
+				perPage = 50
+			}
+			m.paginator.SetTotalPages((m.total + perPage - 1) / perPage)
+			if len(m.items) == 0 {
+				m.cursor = 0
+			} else if m.cursor >= len(m.items) {
+				m.cursor = len(m.items) - 1
+			}
+		}
+		return m, nil
+
 	case switchMsg:
 		m.error = msg.err
 		if msg.err == nil {
