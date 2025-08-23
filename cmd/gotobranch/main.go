@@ -16,7 +16,7 @@ import (
 func main() {
 	repo := flag.String("repo", "", "Path to git repository (defaults to CWD)")
 	scopeFlag := flag.String("scope", "local", "Branch scope: local|remote|all")
-	pageSize := flag.Int("page-size", 50, "Page size for pagination")
+	pageSize := flag.Int("page-size", 25, "Page size for pagination")
 	flag.Parse()
 
 	var scope core.Scope
