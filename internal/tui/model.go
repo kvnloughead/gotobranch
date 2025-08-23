@@ -204,7 +204,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "ctrl+c", "q":
 				return m, tea.Quit
-			case "escape", "f":
+			case "esc":
 				// Exit filter mode
 				m.mode = selectMode
 				m.input.Blur()
@@ -239,7 +239,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if perPage <= 0 {
 				perPage = 50
 			}
-			m.paginator.SetTotalPages((m.total + perPage - 1) / perPage)
+
+			m.paginator.SetTotalPages(m.total)
+
 			if len(m.items) == 0 {
 				m.cursor = 0
 			} else if m.cursor >= len(m.items) {
@@ -295,7 +297,7 @@ func (m Model) View() string {
 	b.WriteString(m.paginator.View())
 	b.WriteString("\n")
 	if m.mode == filterMode {
-		b.WriteString("esc/f: select • Tab: clear filter • ↑/k ↓/j: move • PgUp/PgDn, p/n, left/right: pages • Enter: switch • q: quit\n")
+		b.WriteString("esc: select • Tab: clear filter • ↑/k ↓/j: move • PgUp/PgDn, p/n, left/right: pages • Enter: switch • q: quit\n")
 	} else {
 		b.WriteString("f: filter • digits+Enter: select by number • Backspace: erase • ↑/k ↓/j: move (wrap) • PgUp/PgDn, p/n, left/right: pages • Enter: switch • q: quit\n")
 	}
