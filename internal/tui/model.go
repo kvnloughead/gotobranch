@@ -9,31 +9,50 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/paginator"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"gotobranch/internal/core"
+)
+
+var (
+	titleStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Right = "├"
+		return lipgloss.NewStyle().BorderStyle(b).Padding(0, 1)
+	}()
+
+	infoStyle = func() lipgloss.Style {
+		b := lipgloss.RoundedBorder()
+		b.Left = "┤"
+		return titleStyle.BorderStyle(b)
+	}()
 )
 
 type Model struct {
 	RepoPath string
 	Scope    core.Scope
 
-	input     textinput.Model
-	paginator paginator.Model
+	input textinput.Model
 
-	items []core.Branch
+	Items []core.Branch
 	total int
 	error error
 
-	cursor int // index within current page items
+	cursor int // index of cursor
 
 	// mode controls the input semantics:
 	// - selectMode: digits buffer + Enter selects a branch by number
 	// - filterMode: type-to-filter using the text input
 	mode         mode
 	numberBuffer string
+
+	ready    bool
+	viewport viewport.Model
+
+	Content string
 }
 
 // mode enumerates input modes for the TUI.
@@ -61,31 +80,25 @@ type Options struct {
 	Scope    core.Scope
 	PageSize int
 	Pattern  string
+	Items    []core.Branch
 }
 
 // New constructs a TUI Model configured with the provided options.
 // - RepoPath: path to the git repository (empty = CWD)
 // - Scope: which branches to include (local/remote/all)
-// - PageSize: number of items per page (defaults to 50)
 // - Pattern: initial filter string
+// - Items: the initial items to render
 func New(opts Options) Model {
 	inp := textinput.New()
 	inp.Placeholder = "Filter pattern (press f to edit)"
 	inp.SetValue(opts.Pattern)
-	// Start in select mode; 'f' will focus the input.
-
-	p := paginator.New()
-	if opts.PageSize <= 0 {
-		opts.PageSize = 25
-	}
-	p.PerPage = opts.PageSize
 
 	m := Model{
-		RepoPath:  opts.RepoPath,
-		Scope:     opts.Scope,
-		input:     inp,
-		paginator: p,
-		mode:      selectMode,
+		RepoPath: opts.RepoPath,
+		Scope:    opts.Scope,
+		input:    inp,
+		mode:     selectMode,
+		Items:    opts.Items,
 	}
 	return m
 }
@@ -97,8 +110,8 @@ func (m Model) Init() tea.Cmd {
 }
 
 // refreshList returns a command which queries core.ListBranches for
-// the current page and filter. The command posts a listMsg with the
-// page items and total count which Update will apply to the model.
+// the CWD and filter. The command posts a listMsg with the items and total
+// count which Update will apply to the model.
 func (m Model) refreshList() tea.Cmd {
 	return func() tea.Msg {
 		resp, err := core.ListBranches(core.ListBranchesRequest{
@@ -107,8 +120,6 @@ func (m Model) refreshList() tea.Cmd {
 			Scope:    m.Scope,
 			SortBy:   "recency",
 			SortDir:  "desc",
-			Page:     m.paginator.Page + 1,
-			PageSize: m.paginator.PerPage,
 		})
 		if err != nil {
 			return listMsg{err: err}
@@ -118,6 +129,10 @@ func (m Model) refreshList() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var (
+		cmd  tea.Cmd
+		cmds []tea.Cmd
+	)
 	switch msg := msg.(type) {
 
 	// Key presses
@@ -130,11 +145,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "ctrl+c", "q":
 				return m, tea.Quit
-			case "f":
+
+			case "f": // Switch to filter mode
 				m.mode = filterMode
 				m.input.Focus()
+				if m.ready {
+					m.viewport.SetContent(m.contentView())
+				}
 				return m, nil
-			case "enter":
+
+			case "enter": // Select the chosen number
 				if strings.TrimSpace(m.numberBuffer) != "" {
 					n, err := strconv.Atoi(strings.TrimSpace(m.numberBuffer))
 					m.numberBuffer = ""
@@ -144,55 +164,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, m.selectByNumber(n)
 				}
-				if len(m.items) == 0 {
+				if len(m.Items) == 0 {
 					return m, nil
 				}
-				name := m.items[m.cursor].Name
+				name := m.Items[m.cursor].Name
 				return m, func() tea.Msg {
 					_, err := core.Checkout(m.RepoPath, name, false)
 					return switchMsg{err: err}
 				}
+
 			case "backspace":
 				if len(m.numberBuffer) > 0 {
 					m.numberBuffer = m.numberBuffer[:len(m.numberBuffer)-1]
 				}
 				return m, nil
+
 			case "up", "k":
-				if len(m.items) == 0 {
+				if len(m.Items) == 0 {
 					return m, nil
 				}
 				if m.cursor > 0 {
 					m.cursor--
 				} else {
-					m.cursor = len(m.items) - 1
+					m.cursor = len(m.Items) - 1
 				}
 				return m, nil
 			case "down", "j":
-				if len(m.items) == 0 {
+				if len(m.Items) == 0 {
 					return m, nil
 				}
-				if m.cursor < len(m.items)-1 {
+				if m.cursor < len(m.Items)-1 {
 					m.cursor++
 				} else {
 					m.cursor = 0
 				}
 				return m, nil
+
 			case "pgup", "p", "left":
-				if m.paginator.Page > 0 {
-					m.paginator.PrevPage()
-					m.cursor = 0
-					return m, m.refreshList()
-				}
+				// TODO - go to top of visible list
 				return m, nil
 			case "pgdn", "n", "right":
-				m.paginator.NextPage()
-				m.cursor = 0
+				// TODO - go to bottom of visible list
 				return m, m.refreshList()
-			case "tab":
-				// Clear numeric buffer
+
+			case "tab": // Clear numeric buffer
 				m.numberBuffer = ""
 				return m, nil
+
 			default:
+				// TODO - show message if user types invalid key
 				if len(key) == 1 && key[0] >= '0' && key[0] <= '9' {
 					m.numberBuffer += key
 					return m, nil
@@ -204,49 +224,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch key {
 			case "ctrl+c", "q":
 				return m, tea.Quit
-			case "esc":
-				// Exit filter mode
+
+			case "esc": // Return to select mode
 				m.mode = selectMode
 				m.input.Blur()
-				return m, nil
-			case "tab":
-				m.input.SetValue("")
-				return m, m.refreshList()
-			case "pgup", "p", "right":
-				if m.paginator.Page > 0 {
-					m.paginator.PrevPage()
-					m.cursor = 0
-					return m, m.refreshList()
+				if m.ready {
+					m.viewport.SetContent(m.contentView())
 				}
 				return m, nil
+
+			case "tab": // Clear input value
+				m.input.SetValue("")
+				return m, m.refreshList()
+
+			case "pgup", "p", "right":
+				// TODO - go to bottom of visible list
+				return m, nil
 			case "pgdn", "n", "left":
-				m.paginator.NextPage()
-				m.cursor = 0
+				// TODO - go to top of visible list
 				return m, m.refreshList()
 			}
 		}
+
+	case tea.WindowSizeMsg:
+		headerHeight := lipgloss.Height(m.headerView())
+		footerHeight := lipgloss.Height(m.footerView())
+		verticalMarginHeight := headerHeight + footerHeight
+
+		if !m.ready {
+			// Wait until we've dimensions are received before initializing viewport
+			m.viewport = viewport.New(msg.Width, msg.Height-verticalMarginHeight)
+			m.viewport.YPosition = headerHeight
+			m.viewport.SetContent(m.contentView())
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height - verticalMarginHeight
+		}
+
+		// Handle keyboard and mouse events in the viewport
+		m.viewport, cmd = m.viewport.Update(msg)
+		cmds = append(cmds, cmd)
+
+		return m, tea.Batch(cmds...)
 
 	// listMsg tells the model to update the list of items
 	case listMsg:
 		m.error = msg.err
 		if msg.err == nil {
-			// If no error, update the model with the data from the message, setup
-			// pagination, and clamp cursor between lines 0 and len(msg.items)-1 to
-			// ensure it is always visible.
-			m.items = msg.items
+			m.Items = msg.items
 			m.total = msg.total
-			perPage := m.paginator.PerPage
-			if perPage <= 0 {
-				perPage = 50
-			}
-
-			m.paginator.SetTotalPages(m.total)
-
-			if len(m.items) == 0 {
-				m.cursor = 0
-			} else if m.cursor >= len(m.items) {
-				m.cursor = len(m.items) - 1
-			}
 		}
 		return m, nil
 
@@ -256,10 +283,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	}
+
+	// Handle text input updates in filter mode
 	if m.mode == filterMode {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		if _, ok := msg.(tea.KeyMsg); ok {
+			if m.ready {
+				m.viewport.SetContent(m.contentView())
+			}
 			return m, tea.Batch(cmd, m.refreshList())
 		}
 		return m, cmd
@@ -268,73 +300,71 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	var b strings.Builder
-	if m.mode == filterMode {
-		fmt.Fprintf(&b, "Filter: %s\n", m.input.View())
-	} else {
-		fmt.Fprintf(&b, "Select #: > %s\n", m.numberBuffer)
+	if !m.ready {
+		return "\n  Initializing..."
 	}
-	b.WriteString("\n")
+	m.viewport.SetContent(m.contentView())
+	return fmt.Sprintf("%s\n%s\n%s", m.headerView(), m.viewport.View(), m.footerView())
+}
+
+func (m Model) headerView() string {
+	title := titleStyle.Render("Enter a number to go to that branch.\nf: filter mode\n?: more help")
+	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(title)))
+	return lipgloss.JoinHorizontal(lipgloss.Center, title, line)
+}
+
+func (m Model) footerView() string {
+	info := infoStyle.Render(fmt.Sprintf("%3.f%%", m.viewport.ScrollPercent()*100))
+	line := strings.Repeat("─", max(0, m.viewport.Width-lipgloss.Width(info)))
+	return lipgloss.JoinHorizontal(lipgloss.Center, line, info)
+}
+
+func (m Model) contentView() string {
+	content := m.Content
+	if m.mode == filterMode {
+		content = fmt.Sprintf("Filter: %s\n\n", m.input.View()) + content
+	} else {
+		content = fmt.Sprintf("Select #: > %s\n", m.numberBuffer) + content
+	}
 	if m.error != nil {
-		fmt.Fprintf(&b, "Error: %v\n\n", m.error)
+		content += fmt.Sprintf("Error: %v\n\n", m.error)
 	}
 
-	// Cursor starts on first entry on a given page
-	start := m.paginator.Page * m.paginator.PerPage
-	for i, it := range m.items {
+	start := 0
+	for i, item := range m.Items {
 		prefix := "  "
 		if i == m.cursor {
 			prefix = "> " // > marks currently selected item
 		}
-		line := it.Name
-		if it.IsCurrent {
+		line := item.Name
+		if item.IsCurrent {
 			line = "* " + line // * marks current branch
 		}
 		// Numbered line items
-		fmt.Fprintf(&b, "%s%3d. %s\n", prefix, start+i+1, line)
+		content += fmt.Sprintf("%s%3d. %s\n", prefix, start+i+1, line)
 	}
-	b.WriteString("\n")
-	b.WriteString(m.paginator.View())
-	b.WriteString("\n")
-	if m.mode == filterMode {
-		b.WriteString("esc: select • Tab: clear filter • ↑/k ↓/j: move • PgUp/PgDn, p/n, left/right: pages • Enter: switch • q: quit\n")
-	} else {
-		b.WriteString("f: filter • digits+Enter: select by number • Backspace: erase • ↑/k ↓/j: move (wrap) • PgUp/PgDn, p/n, left/right: pages • Enter: switch • q: quit\n")
-	}
-	return b.String()
+	return content
 }
 
-// selectByNumber resolves an absolute selection number to a page and offset
-// and attempts to switch to that branch. It fetches just the page that
-// contains the requested index using the current filter and scope.
+// selectByNumber accepts a selection a line item and attempts to switch to
+// that branch.
 func (m Model) selectByNumber(n int) tea.Cmd {
 	return func() tea.Msg {
-		perPage := m.paginator.PerPage
-		if perPage <= 0 {
-			perPage = 50
-		}
 		if n <= 0 {
 			return switchMsg{err: fmt.Errorf("invalid selection")}
 		}
 		idx := n - 1
-		page := idx/perPage + 1
-		offset := idx % perPage
 		resp, err := core.ListBranches(core.ListBranchesRequest{
 			RepoPath: m.RepoPath,
 			Pattern:  strings.TrimSpace(m.input.Value()),
 			Scope:    m.Scope,
 			SortBy:   "recency",
 			SortDir:  "desc",
-			Page:     page,
-			PageSize: perPage,
 		})
 		if err != nil {
 			return switchMsg{err: err}
 		}
-		if offset < 0 || offset >= len(resp.Items) {
-			return switchMsg{err: fmt.Errorf("selection out of range")}
-		}
-		name := resp.Items[offset].Name
+		name := resp.Items[idx].Name
 		_, err = core.Checkout(m.RepoPath, name, false)
 		return switchMsg{err: err}
 	}
